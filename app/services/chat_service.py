@@ -85,10 +85,43 @@ class ChatService:
         is_first_turn = not any(msg.role == "user" for msg in history)
         
         intent = None
-        if is_first_turn:
-            intent = await self._extract_intent(message)
+        session_prompt = await self._sessions.get_system_prompt(session_id)
+
+        # If this session is configured to use the Actyvate prep-call flow,
+        # route the first user turn through the local state-machine adapter
+        # rather than performing a standard LLM completion.
+        if session_prompt and "actyvate_prep_call" in session_prompt.lower():
+            try:
+                from app.services.actyvate_prep_agent import PrepCallAgent
+                import os
+                flow_path = os.path.join(os.getcwd(), "app", "workflows", "actyvate_prep_call_flow.json")
+                agent = PrepCallAgent(flow_path)
+
+                # On the first turn extract structured intent to populate variables
+                if is_first_turn:
+                    intent = await self._extract_intent(message)
+                agent.start({})
+                if intent:
+                    agent.transition(intent)
+                else:
+                    # If no intent extracted, pass the raw message as a last resort
+                    agent.transition({"raw_user_message": message})
+
+                node = agent.get_current_node() or {}
+                reply_text = node.get("first_message") or node.get("prompt") or "Okay."
+
+                await self._persist_turn(session_id, message, reply_text)
+                logger.info("chat (flow) session=%s node=%s", session_id, agent.current_node)
+                return reply_text, 0, intent
+            except Exception as exc:
+                logger.exception("Actyvate flow adapter failed: %s", exc)
+                # Fall back to regular LLM chat below
 
         messages = await self._build_messages(session_id, message, system_prompt)
+
+        intent = None
+        if is_first_turn:
+            intent = await self._extract_intent(message)
 
         reply, tokens = await self._client.chat_complete(
             messages=messages,

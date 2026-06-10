@@ -1,0 +1,313 @@
+{
+  "meta": {
+    "name": "Actyvate AI Prep Call - VAPI Flow",
+    "version": "1.0",
+    "description": "Structured state-machine representing nodes, prompts, extracted variables, and edges for the AI prep call workflow.\n    Generated from the provided spec to serve as a canonical VAPI-like source file.",
+    "created_by": "copilot",
+    "created_at": "2026-06-09"
+  },
+  "nodes": {
+    "start_disclosure": {
+      "title": "Start Disclosure",
+      "first_message": "Hi, this is {{agent_name}}, an AI assistant calling on behalf of {{client_name}}. I'm reaching out about your upcoming meeting with {{rep_name}} {{meeting_datetime_relative}}. This call may be recorded for quality. Is now a good time to chat for about two minutes?",
+      "prompt": "Deliver the legally required disclosure. Listen to the lead's first response and classify intent: PROCEED, SELF-IDENTIFY, BAD_TIME, WRONG_PERSON, OPT_OUT, HOSTILE, SILENCE (5s+). Keep follow-ups to 1 sentence.",
+      "extracted_variables": [
+        {"name": "permission_to_continue", "type": "boolean"},
+        {"name": "identity_confirmed", "type": "boolean"},
+        {"name": "bad_time_to_talk", "type": "boolean"},
+        {"name": "wrong_person", "type": "boolean"},
+        {"name": "opted_out", "type": "boolean"},
+        {"name": "lead_sentiment", "type": "number"}
+      ],
+      "edges": [
+        {"condition": "permission_to_continue == true", "next": "identity_confirm"},
+        {"condition": "identity_confirmed == true", "next": "meeting_confirm"},
+        {"condition": "wrong_person == true", "next": "end_wrong_person"},
+        {"condition": "opted_out == true", "next": "end_opted_out"},
+        {"condition": "bad_time_to_talk == true", "next": "reschedule_prep_call"},
+        {"condition": "lead_sentiment < -0.6", "next": "end_hostile"}
+      ]
+    },
+
+    "identity_confirm": {
+      "title": "Identity Confirm",
+      "first_message": "Just to confirm, am I speaking with {{lead_first_name}}?",
+      "prompt": "Verify you're speaking with the right person. Compliance-critical: CONFIRMED, WRONG_PERSON, AMBIGUOUS (re-ask once). If wrong person, respond only with apology and close.",
+      "extracted_variables": [
+        {"name": "identity_confirmed", "type": "boolean"},
+        {"name": "wrong_person", "type": "boolean"},
+        {"name": "pass_phone_to_owner", "type": "boolean"}
+      ],
+      "edges": [
+        {"condition": "identity_confirmed == true", "next": "meeting_confirm"},
+        {"condition": "wrong_person == true", "next": "end_wrong_person"},
+        {"condition": "pass_phone_to_owner == true", "next": "transfer_to_rep"}
+      ]
+    },
+
+    "end_wrong_person": {
+      "title": "End - Wrong Person",
+      "first_message": "Apologies, I have the wrong number. Have a great day!",
+      "prompt": "MUST NOT INCLUDE client name, lead name, rep, meeting details. Brief apology and neutral close only.",
+      "extracted_variables": [],
+      "edges": []
+    },
+
+    "reschedule_prep_call": {
+      "title": "Reschedule Prep Call",
+      "first_message": "Totally understand — I'll keep this brief. Would later today or tomorrow morning be better for a quick 2-minute check-in?",
+      "prompt": "Capture preferred_callback_time/window or whether they decline. If accepts, route to Tool_ScheduleCallback. If declines, close politely.",
+      "extracted_variables": [
+        {"name": "preferred_callback_time", "type": "string"},
+        {"name": "preferred_callback_window", "type": "string"},
+        {"name": "accepts_callback", "type": "boolean"}
+      ],
+      "edges": [
+        {"condition": "accepts_callback == true", "next": "schedule_callback"},
+        {"condition": "accepts_callback == false", "next": "end_success"}
+      ]
+    },
+
+    "end_opted_out": {
+      "title": "End - Opted Out",
+      "first_message": "Understood, I'll make sure you're removed from our calling list right away. Sorry to bother you.",
+      "prompt": "Compliance-critical: capture verbatim opt-out phrase, set opted_out=true, call Tool_MarkDNC immediately. Do not ask why.",
+      "extracted_variables": [
+        {"name": "opt_out_phrase", "type": "string"},
+        {"name": "opted_out", "type": "boolean"}
+      ],
+      "edges": []
+    },
+
+    "end_hostile": {
+      "title": "End - Hostile",
+      "first_message": "I understand. I'll end the call now. Goodbye.",
+      "prompt": "If lead sentiment < -0.6, close immediately and log hostility. Do not escalate or argue.",
+      "extracted_variables": [
+        {"name": "lead_sentiment", "type": "number"}
+      ],
+      "edges": []
+    },
+
+    "meeting_confirm": {
+      "title": "Meeting Confirm / Intent Router",
+      "first_message": "I'm calling about your {{meeting_type}} with {{rep_name}} {{meeting_datetime_relative}} at {{meeting_datetime_spoken}}. Just confirming — does that still work for you?",
+      "prompt": "Classify primary_intent: confirm · reschedule · cancel · doesnt_remember · unclear. Acknowledge intent then route: confirm -> mark confirmed, reschedule -> Tool_FetchSlots, cancel -> Cancel_AskReason, doesnt_remember -> Transfer_ToRep.",
+      "extracted_variables": [
+        {"name": "primary_intent", "type": "string"},
+        {"name": "wants_reschedule", "type": "boolean"},
+        {"name": "wants_cancel", "type": "boolean"},
+        {"name": "meeting_acknowledged", "type": "boolean"},
+        {"name": "lead_sentiment", "type": "number"}
+      ],
+      "edges": [
+        {"condition": "primary_intent == 'confirm'", "next": "tool_mark_confirmed"},
+        {"condition": "primary_intent == 'reschedule'", "next": "reschedule_flow"},
+        {"condition": "primary_intent == 'cancel'", "next": "cancel_ask_reason"},
+        {"condition": "primary_intent == 'doesnt_remember'", "next": "transfer_to_rep"},
+        {"condition": "opted_out == true", "next": "end_opted_out"}
+      ]
+    },
+
+    "tool_mark_confirmed": {
+      "title": "Tool: Mark Confirmed",
+      "first_message": "Perfect, glad to hear it.",
+      "prompt": "Invoke backend Tool_MarkConfirmed to write status. Then proceed to discovery (context refresh and discovery questions).",
+      "extracted_variables": [],
+      "edges": [
+        {"condition": "true", "next": "context_refresh"}
+      ]
+    },
+
+    "reschedule_flow": {
+      "title": "Reschedule Flow (send self-serve link)",
+      "first_message": "No problem, I'll send a booking link so you can pick the best time — it goes to email and WhatsApp by default.",
+      "prompt": "Default behavior: Tool_SendRescheduleLink to email+WhatsApp. Confirm alternate contacts if asked. Handle wants_immediate_send, concerns, change_of_mind_to_keep_original, wants_to_cancel_instead.",
+      "extracted_variables": [
+        {"name": "lead_acknowledged_link_process", "type": "boolean"},
+        {"name": "wants_immediate_send", "type": "boolean"},
+        {"name": "link_send_urgency", "type": "string"},
+        {"name": "change_of_mind_to_keep_original", "type": "boolean"}
+      ],
+      "edges": [
+        {"condition": "change_of_mind_to_keep_original == true", "next": "tool_mark_confirmed"},
+        {"condition": "wants_to_cancel_instead == true", "next": "cancel_ask_reason"},
+        {"condition": "lead_acknowledged_link_process == true", "next": "reschedule_link_confirmed"}
+      ]
+    },
+
+    "reschedule_link_confirmed": {
+      "title": "Reschedule Link Sent",
+      "first_message": "All set — I've just sent the booking link to your email and WhatsApp. Anything else before I let you go?",
+      "prompt": "Confirm receipt/acknowledgment, handle final questions (link re-send, reminders, immediate booking), capture wants_followup_reminder.",
+      "extracted_variables": [
+        {"name": "final_questions", "type": "string"},
+        {"name": "wants_followup_reminder", "type": "boolean"},
+        {"name": "link_confirmation_acknowledged", "type": "boolean"}
+      ],
+      "edges": [
+        {"condition": "wants_followup_reminder == true", "next": "tool_schedule_followup_reminder"},
+        {"condition": "wants_to_cancel_instead == true", "next": "cancel_ask_reason"},
+        {"condition": "true", "next": "end_success"}
+      ]
+    },
+
+    "cancel_ask_reason": {
+      "title": "Cancel - Ask Reason",
+      "first_message": "Got it. Just so I can let {{rep_name}} know — what's the main reason you'd like to cancel?",
+      "prompt": "Capture cancel_reason verbatim and categorize into cancel_reason_category. Do NOT push back. Offer one soft save only if appropriate per category.",
+      "extracted_variables": [
+        {"name": "cancel_reason", "type": "string"},
+        {"name": "cancel_reason_category", "type": "string"},
+        {"name": "wants_to_save_meeting", "type": "boolean"}
+      ],
+      "edges": [
+        {"condition": "wants_to_save_meeting == true", "next": "reschedule_flow"},
+        {"condition": "true", "next": "tool_mark_dnc_or_cancel"}
+      ]
+    },
+
+    "context_refresh": {
+      "title": "Context Refresh",
+      "first_message": "Quick refresher — this meeting is to review your current books, understand your business needs, and see how Virtuous Bookkeeping can take bookkeeping off your plate. {{rep_name}} will walk you through everything.",
+      "prompt": "Short context-setting then proceed to structured discovery. If lead deflects to rep, Transfer_ToRep.",
+      "extracted_variables": [
+        {"name": "context_acknowledged", "type": "boolean"},
+        {"name": "red_flag_disinterest", "type": "boolean"}
+      ],
+      "edges": [
+        {"condition": "context_acknowledged == true", "next": "discovery_q1"},
+        {"condition": "red_flag_disinterest == true", "next": "discovery_q1"}
+      ]
+    },
+
+    "discovery_q1": {
+      "title": "Discovery Q1 - Business Type & Tenure",
+      "first_message": "What type of business do you run, and roughly how long have you been operating?",
+      "prompt": "HIGH priority. Capture business_type, business_category, years_in_business, business_stage. One question per turn. Acknowledge answers in 3-5 words.",
+      "extracted_variables": [
+        {"name": "business_type", "type": "string"},
+        {"name": "business_category", "type": "string"},
+        {"name": "years_in_business", "type": "string"},
+        {"name": "business_stage", "type": "string"}
+      ],
+      "edges": [
+        {"condition": "true", "next": "discovery_q2"}
+      ]
+    },
+
+    "discovery_q2": {
+      "title": "Discovery Q2 - Current Software",
+      "first_message": "What are you using for bookkeeping today — QuickBooks, Xero, spreadsheets, or something else?",
+      "prompt": "Capture current_software. If QuickBooks, ask Online vs Desktop.",
+      "extracted_variables": [
+        {"name": "current_software", "type": "string"}
+      ],
+      "edges": [
+        {"condition": "true", "next": "discovery_q3"}
+      ]
+    },
+
+    "discovery_q3": {
+      "title": "Discovery Q3 - Books Status",
+      "first_message": "And are your books current, or are you a bit behind?",
+      "prompt": "Capture books_status and catchup_needed. Use empathy for behind answers.",
+      "extracted_variables": [
+        {"name": "books_status", "type": "string"},
+        {"name": "catchup_needed", "type": "string"}
+      ],
+      "edges": [
+        {"condition": "true", "next": "discovery_q4"}
+      ]
+    },
+
+    "discovery_q4": {
+      "title": "Discovery Q4 - Primary Pain",
+      "first_message": "What's the main reason you're looking for bookkeeping help right now?",
+      "prompt": "Capture primary_pain and pain_urgency. Acknowledge and continue.",
+      "extracted_variables": [
+        {"name": "primary_pain", "type": "string"},
+        {"name": "pain_urgency", "type": "string"}
+      ],
+      "edges": [
+        {"condition": "discovery_complete == true", "next": "closing"},
+        {"condition": "true", "next": "discovery_medium_questions"}
+      ]
+    },
+
+    "discovery_medium_questions": {
+      "title": "Discovery - Medium Priority Questions",
+      "first_message": "A few quick follow-ups: roughly how many transactions per month, and is the business an LLC or other entity?",
+      "prompt": "Capture medium-priority fields (estimated_monthly_transactions, entity_type, decision_makers, has_payroll). Stop if time is limited.",
+      "extracted_variables": [
+        {"name": "estimated_monthly_transactions", "type": "string"},
+        {"name": "entity_type", "type": "string"},
+        {"name": "decision_makers", "type": "string"},
+        {"name": "has_payroll", "type": "boolean"}
+      ],
+      "edges": [
+        {"condition": "true", "next": "closing"}
+      ]
+    },
+
+    "closing": {
+      "title": "Closing",
+      "first_message": "That's super helpful — really helps {{rep_name}} prepare for your call. One last thing before we wrap up: is there anything specific you'd like {{rep_name}} to be ready to discuss?",
+      "prompt": "Capture questions_for_rep, prep_topics_requested, additional_attendees, document_readiness. Deliver warm closing and trigger post-call processing: summary generation, CRM writeback, score update.",
+      "extracted_variables": [
+        {"name": "questions_for_rep", "type": "string"},
+        {"name": "prep_topics_requested", "type": "array"},
+        {"name": "additional_attendees", "type": "string"},
+        {"name": "document_readiness", "type": "string"}
+      ],
+      "edges": [
+        {"condition": "wants_reschedule == true", "next": "reschedule_flow"},
+        {"condition": "wants_cancel == true", "next": "cancel_ask_reason"},
+        {"condition": "true", "next": "end_success"}
+      ]
+    },
+
+    "transfer_to_rep": {
+      "title": "Transfer To Rep",
+      "first_message": "Of course — let me connect you with {{rep_name}} right now. One moment please.",
+      "prompt": "Attempt warm transfer: whisper summary to rep and then connect. If transfer fails, fallback to Tool_ScheduleCallback.",
+      "extracted_variables": [
+        {"name": "rep_available_now", "type": "boolean"}
+      ],
+      "edges": [
+        {"condition": "rep_available_now == true", "next": "live_transfer"},
+        {"condition": "rep_available_now == false", "next": "schedule_callback"}
+      ]
+    },
+
+    "schedule_callback": {
+      "title": "Schedule Callback",
+      "first_message": "Okay — what time would work best for a callback?",
+      "prompt": "Capture preferred time/window and call Tool_ScheduleCallback to create the callback.",
+      "extracted_variables": [
+        {"name": "preferred_callback_time", "type": "string"},
+        {"name": "accepts_callback", "type": "boolean"}
+      ],
+      "edges": [
+        {"condition": "accepts_callback == true", "next": "end_success"},
+        {"condition": "accepts_callback == false", "next": "end_success"}
+      ]
+    },
+
+    "end_success": {
+      "title": "End - Success",
+      "first_message": "Perfect — thanks for your time. Have a great day!",
+      "prompt": "Trigger post-call processing: summary generation, CRM writeback, lead scoring, notify rep with prep notes.",
+      "extracted_variables": [],
+      "edges": []
+    },
+
+    "end_cancelled": {
+      "title": "End - Cancelled",
+      "first_message": "Thanks again. Your meeting is cancelled. Have a great day.",
+      "prompt": "Trigger cancel workflow: Tool_CancelMeeting and post-call processing for cancellations.",
+      "extracted_variables": [],
+      "edges": []
+    }
+  }
+}
