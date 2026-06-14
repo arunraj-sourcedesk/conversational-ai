@@ -26,6 +26,22 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
         trace_id = str(uuid.uuid4())[:8]
         request.state.trace_id = trace_id
+
+        is_api_docs = (
+            request.url.path == "/openapi.json"
+            or request.url.path.startswith("/docs")
+            or request.url.path.startswith("/redoc")
+        )
+
+        if is_api_docs:
+            try:
+                response = await call_next(request)
+                response.headers["X-Trace-Id"] = trace_id
+                return response
+            except Exception:
+                logger.exception("Unhandled exception trace_id=%s", trace_id)
+                raise
+
         start = time.perf_counter()
 
         # Read and log request body (body() caches the body for downstream)

@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     app_version: str = Field(default="1.0.0", env="APP_VERSION")
     debug: bool = Field(default=False, env="DEBUG")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    log_dir: str = Field(default="logs", env="LOG_DIR")
+    log_file: str = Field(default="app.log", env="LOG_FILE")
+    log_backup_count: int = Field(default=7, env="LOG_BACKUP_COUNT")
 
     # --- Server ---
     host: str = Field(default="0.0.0.0", env="HOST")
