@@ -13,22 +13,38 @@ from pydantic import BaseModel, Field
 class CreateSessionRequest(BaseModel):
     """Payload for POST /chat/session."""
 
-    session_id: str | None = Field(
-        default=None,
-        description="Optional pre-defined session ID. If not provided, a UUID will be generated.",
+    model_config = {
+        "populate_by_name": True
+    }
+
+    client_id: str = Field(
+        ..., 
+        alias="clientId",
+        description="Client identifier associated with this session.",
+    )
+    lead_id: str = Field(
+        ..., 
+        alias="leadId",
+        description="Lead identifier associated with this session.",
     )
     system_prompt: str | None = Field(
         default=None,
+        alias="systemPrompt",
         description="Configured context (system prompt) for this session to be used throughout the conversation.",
     )
     greeting_message: str | None = Field(
         default=None,
-        description="The message played to the user initially, to be added to history.",
+        alias="greetingMessage",
+        description="The initial AI greeting message for the session.",
     )
 
 
 class ChatRequest(BaseModel):
     """Payload for POST /chat and POST /chat/stream."""
+
+    model_config = {
+        "populate_by_name": True
+    }
 
     message: str = Field(
         ...,
@@ -39,6 +55,7 @@ class ChatRequest(BaseModel):
     )
     session_id: str = Field(
         ...,
+        alias="sessionId",
         min_length=1,
         max_length=128,
         description="Unique identifier for the conversation session.",
@@ -81,7 +98,65 @@ class IntentExtraction(BaseModel):
 class CreateSessionResponse(BaseModel):
     """Response for POST /chat/session."""
 
-    session_id: str = Field(..., description="Dynamically generated session ID.")
+    model_config = {"populate_by_name": True}
+
+    session_id: str = Field(..., alias="sessionId", description="Session ID.")
+
+
+class SessionMetadata(BaseModel):
+    """Session summary returned by GET /chat/sessions."""
+
+    model_config = {"populate_by_name": True}
+
+    session_id: str = Field(..., alias="sessionId")
+    client_id: str = Field(..., alias="clientId")
+    lead_id: str = Field(..., alias="leadId")
+    created_at: str = Field(..., alias="createdAt")
+    updated_at: str = Field(..., alias="updatedAt")
+
+
+class ChatHistoryMessage(BaseModel):
+    """Single chat message returned by history APIs."""
+
+    sender: str = Field(..., description="USER or AI")
+    message: str = Field(...)
+    timestamp: str = Field(...)
+    tokens_used: int | None = Field(default=None, description="Tokens consumed (assistant rows only).")
+    intent_extraction: IntentExtraction | None = Field(
+        default=None, description="Extracted intent from the first user turn (assistant rows only)."
+    )
+
+
+class ChatHistoryResponse(BaseModel):
+    """Response for GET /chat/sessions/{sessionId}/history."""
+
+    model_config = {"populate_by_name": True}
+
+    session_id: str = Field(..., alias="sessionId")
+    page: int = Field(...)
+    page_size: int = Field(..., alias="pageSize")
+    messages: list[ChatHistoryMessage]
+
+
+class ConversationMessage(BaseModel):
+    """A single turn stored in session memory."""
+
+    role: str = Field(..., description="'user' or 'assistant'.")
+    content: str = Field(..., description="Message content.")
+
+
+class SessionMemoryResponse(BaseModel):
+    """Response for GET /chat/sessions/{sessionId}/memory."""
+
+    model_config = {"populate_by_name": True}
+
+    session_id: str = Field(..., alias="sessionId")
+    system_prompt: str | None = Field(
+        default=None,
+        alias="systemPrompt",
+        description="Configured system prompt for this in-memory session.",
+    )
+    messages: list[ConversationMessage]
 
 
 class ChatResponse(BaseModel):
@@ -102,14 +177,3 @@ class StreamChunk(BaseModel):
 
     delta: str = Field(..., description="Partial token text.")
     done: bool = Field(default=False, description="True on the final chunk.")
-
-
-# ---------------------------------------------------------------------------
-# Session / Memory
-# ---------------------------------------------------------------------------
-
-class ConversationMessage(BaseModel):
-    """A single turn stored in session memory."""
-
-    role: str = Field(..., description="'user' or 'assistant'.")
-    content: str = Field(..., description="Message content.")

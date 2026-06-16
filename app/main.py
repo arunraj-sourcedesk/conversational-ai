@@ -43,6 +43,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         "Starting %s v%s [debug=%s]",
         settings.app_name, settings.app_version, settings.debug,
     )
+    # Initialize database
+    try:
+        from app.utils.db import init_db
+        await init_db()
+    except Exception as exc:
+        logger.exception("Failed to initialize database during startup: %s", exc)
     yield
     logger.info("Shutting down %s", settings.app_name)
 

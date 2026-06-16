@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     session_max_messages: int = Field(default=20, env="SESSION_MAX_MESSAGES")
     session_ttl_seconds: int = Field(default=3600, env="SESSION_TTL_SECONDS")
 
+    # --- Database ---
+    db_host: str = Field(default="localhost", env="DB_HOST")
+    db_user: str = Field(default="root", env="DB_USER")
+    db_password: str = Field(default="", env="DB_PASSWORD")
+    db_name: str = Field(default="conversations", env="DB_NAME")
+    db_port: int = Field(default=3306, env="DB_PORT")
+
     # --- Request ---
     request_timeout: float = Field(default=60.0, env="REQUEST_TIMEOUT")
     max_audio_size_mb: int = Field(default=25, env="MAX_AUDIO_SIZE_MB")

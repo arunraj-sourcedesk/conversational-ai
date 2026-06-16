@@ -10,18 +10,23 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import StreamingResponse
 
 from app.core.logging import get_logger
 from app.models.chat import (
+    ChatHistoryResponse,
+    ChatHistoryMessage,
     ChatRequest,
     ChatResponse,
     CreateSessionRequest,
     CreateSessionResponse,
+    SessionMemoryResponse,
+    SessionMetadata,
 )
 from app.services.chat_service import ChatService
-from app.utils.dependencies import get_chat_service
+from app.services.session_store import InMemorySessionStore
+from app.utils.dependencies import get_chat_service, get_session_store
 
 logger = get_logger(__name__)
 
@@ -44,9 +49,10 @@ async def create_session(
 ) -> CreateSessionResponse:
     """Create a session and optionally configure a system prompt and an initial greeting."""
     session_id = await service.create_session(
-        session_id=body.session_id,
         system_prompt=body.system_prompt,
         greeting_message=body.greeting_message,
+        client_id=body.client_id,
+        lead_id=body.lead_id,
     )
     return CreateSessionResponse(session_id=session_id)
 
@@ -149,4 +155,94 @@ async def chat_stream(
             "X-Accel-Buffering": "no",   # Disable Nginx buffering
             "Connection": "keep-alive",
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /chat/sessions  — list persisted sessions
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/sessions",
+    response_model=list[SessionMetadata],
+    summary="List persisted chat sessions",
+    description=(
+        "Retrieve stored chat sessions filtered by clientId and/or leadId. "
+        "Returns session metadata with created and updated timestamps."
+    ),
+)
+async def list_sessions(
+    client_id: str | None = Query(default=None, alias="clientId"),
+    lead_id: str | None = Query(default=None, alias="leadId"),
+) -> list[SessionMetadata]:
+    from app.utils.db import get_sessions
+    sessions = await get_sessions(client_id=client_id, lead_id=lead_id)
+    return [
+        SessionMetadata(
+            sessionId=item["session_id"],
+            clientId=item["client_id"],
+            leadId=item["lead_id"],
+            createdAt=item["created_at"],
+            updatedAt=item["updated_at"],
+        )
+        for item in sessions
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GET /chat/sessions/{session_id}/history  — retrieve chat history from the DB
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/sessions/{session_id}/history",
+    response_model=ChatHistoryResponse,
+    summary="Get chat history from database",
+    description="Fetch the chat history for a session, ordered by time and paginated.",
+)
+async def get_history(
+    session_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500, alias="pageSize"),
+) -> ChatHistoryResponse:
+    """Get chat history for a session."""
+    from app.utils.db import get_chat_history
+
+    page = max(1, page)
+    page_size = min(max(1, page_size), 500)
+    history = await get_chat_history(session_id, page=page, page_size=page_size)
+    messages = [
+        ChatHistoryMessage(
+            sender="AI" if item["role"] == "assistant" else "USER",
+            message=item["message"],
+            timestamp=item["created_at"],
+            tokens_used=item.get("tokens_used"),
+            intent_extraction=item.get("intent_extraction"),
+        )
+        for item in history
+    ]
+    return ChatHistoryResponse(
+        session_id=session_id,
+        page=page,
+        page_size=page_size,
+        messages=messages,
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/memory",
+    response_model=SessionMemoryResponse,
+    summary="Inspect in-memory session state",
+    description="Return the current in-memory conversation history and configured system prompt for a session.",
+)
+async def get_session_memory(
+    session_id: str,
+    store: InMemorySessionStore = Depends(get_session_store),
+) -> SessionMemoryResponse:
+    """Get current session-store data for a session."""
+    history = await store.get_history(session_id)
+    system_prompt = await store.get_system_prompt(session_id)
+    return SessionMemoryResponse(
+        session_id=session_id,
+        system_prompt=system_prompt,
+        messages=history,
     )

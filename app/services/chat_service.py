@@ -26,6 +26,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful, persuasive, and friendly human sales and support representative. "
     "You must never disclose that you are an AI, a program, or a bot. Always maintain a natural, conversational human persona. "
     "Respond in plain text unless the user explicitly asks for formatting."
+    "The current lead has a meeting scheduled with you to talk about services or product. You are here to guide him through the call and ensure that the meeting is fruitful."
+    "The meeting scheduled at 7 pm today, remind the lead about this and ask if he can talk now or later"
 )
 
 
@@ -47,12 +49,15 @@ class ChatService:
     # ------------------------------------------------------------------
 
     async def create_session(
-        self, session_id: str | None = None, system_prompt: str | None = None, greeting_message: str | None = None
+        self,
+        system_prompt: str | None = None,
+        greeting_message: str | None = None,
+        client_id: str | None = None,
+        lead_id: str | None = None,
     ) -> str:
         """Create a new session and return the generated session ID."""
-        if not session_id:
-            import uuid
-            session_id = str(uuid.uuid4())
+        import uuid
+        session_id = str(uuid.uuid4())
         await self._sessions.create_session(session_id, system_prompt)
         
         if greeting_message:
@@ -60,8 +65,26 @@ class ChatService:
                 session_id, ConversationMessage(role="assistant", content=greeting_message)
             )
 
+        # Persist the session metadata and optional greeting message before returning.
+        await self._save_session_db(session_id, client_id, lead_id, greeting_message)
+
         logger.info("create_session session=%s", session_id)
         return session_id
+
+    async def _save_session_db(
+        self,
+        session_id: str,
+        client_id: str | None,
+        lead_id: str | None,
+        greeting_message: str | None,
+    ) -> None:
+        try:
+            from app.utils.db import save_session, save_message
+            await save_session(session_id, client_id, lead_id)
+            if greeting_message:
+                await save_message(session_id, "assistant", greeting_message)
+        except Exception as e:
+            logger.error("Failed to save session metadata to DB for session %s: %s", session_id, e)
 
     # ------------------------------------------------------------------
     # Non-streaming
@@ -110,7 +133,7 @@ class ChatService:
                 node = agent.get_current_node() or {}
                 reply_text = node.get("first_message") or node.get("prompt") or "Okay."
 
-                await self._persist_turn(session_id, message, reply_text)
+                await self._persist_turn(session_id, message, reply_text, tokens_used=0, intent=intent)
                 logger.info("chat (flow) session=%s node=%s", session_id, agent.current_node)
                 return reply_text, 0, intent
             except Exception as exc:
@@ -119,19 +142,25 @@ class ChatService:
 
         messages = await self._build_messages(session_id, message, system_prompt)
 
-        intent = None
-        if is_first_turn:
-            intent = await self._extract_intent(message)
-
         reply, tokens = await self._client.chat_complete(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
         )
 
-        await self._persist_turn(session_id, message, reply)
+        # For the first turn, persist the DB row and then extract intent in a
+        # single chained background task to avoid the race condition where the
+        # UPDATE from intent extraction races ahead of the INSERT from persist.
+        if is_first_turn:
+            import asyncio as _asyncio
+            _asyncio.create_task(
+                self._persist_and_extract_intent(session_id, message, reply, tokens)
+            )
+        else:
+            await self._persist_turn(session_id, message, reply, tokens_used=tokens)
         logger.info("chat session=%s tokens=%d", session_id, tokens)
-        return reply, tokens, intent
+
+        return reply, tokens, None
 
     # ------------------------------------------------------------------
     # Streaming
@@ -164,7 +193,7 @@ class ChatService:
             yield token
 
         full_reply = "".join(full_reply_parts)
-        await self._persist_turn(session_id, message, full_reply)
+        await self._persist_turn(session_id, message, full_reply, persist_db=False)
         logger.info("chat_stream session=%s chars=%d", session_id, len(full_reply))
 
     # ------------------------------------------------------------------
@@ -191,15 +220,95 @@ class ChatService:
         return messages
 
     async def _persist_turn(
-        self, session_id: str, user_message: str, assistant_reply: str
+        self,
+        session_id: str,
+        user_message: str,
+        assistant_reply: str,
+        persist_db: bool = True,
+        tokens_used: int | None = None,
+        intent: IntentExtraction | None = None,
     ) -> None:
-        """Save both sides of the turn to session memory."""
+        """Save both sides of the turn to session memory and (optionally) the DB."""
         await self._sessions.append(
             session_id, ConversationMessage(role="user", content=user_message)
         )
         await self._sessions.append(
             session_id, ConversationMessage(role="assistant", content=assistant_reply)
         )
+
+        if persist_db:
+            import asyncio
+            asyncio.create_task(
+                self._persist_turn_db(
+                    session_id,
+                    user_message,
+                    assistant_reply,
+                    tokens_used,
+                    intent,
+                )
+            )
+
+    async def _persist_turn_db(
+        self,
+        session_id: str,
+        user_message: str,
+        assistant_reply: str,
+        tokens_used: int | None = None,
+        intent: IntentExtraction | None = None,
+    ) -> None:
+        """Persist both sides of a turn to the database."""
+        intent_payload = intent.model_dump() if intent is not None else None
+        try:
+            from app.utils.db import save_message
+            await save_message(session_id, "user", user_message)
+            await save_message(
+                session_id,
+                "assistant",
+                assistant_reply,
+                tokens_used=tokens_used,
+                intent_extraction=intent_payload,
+            )
+        except Exception as e:
+            logger.error("Failed to save turn to DB for session %s: %s", session_id, e)
+
+    async def _persist_and_extract_intent(
+        self,
+        session_id: str,
+        user_message: str,
+        assistant_reply: str,
+        tokens: int,
+    ) -> None:
+        """
+        Background task (first turn only): persist the chat turn to the DB
+        *then* extract intent and patch the assistant row.
+
+        Sequencing both operations here eliminates the race condition where
+        the UPDATE from intent extraction used to run before the INSERT from
+        _persist_turn_db had committed.
+        """
+        # Step 1: persist the turn (INSERT) — must complete before we UPDATE.
+        await self._persist_turn_db(session_id, user_message, assistant_reply, tokens)
+        # Also update in-memory session store (persist_db=False since we just did it).
+        await self._sessions.append(
+            session_id, ConversationMessage(role="user", content=user_message)
+        )
+        await self._sessions.append(
+            session_id, ConversationMessage(role="assistant", content=assistant_reply)
+        )
+
+        # Step 2: extract intent and UPDATE the row we just inserted.
+        intent = await self._extract_intent(user_message)
+        if intent is None:
+            return
+        try:
+            from app.utils.db import update_last_assistant_intent
+            await update_last_assistant_intent(
+                session_id,
+                intent_extraction=intent.model_dump(),
+            )
+            logger.info("intent updated in DB for session=%s", session_id)
+        except Exception as e:
+            logger.error("Failed to update intent in DB for session %s: %s", session_id, e)
 
     async def _extract_intent(self, user_message: str) -> IntentExtraction | None:
         """Extract user intent using a structured LLM call."""
