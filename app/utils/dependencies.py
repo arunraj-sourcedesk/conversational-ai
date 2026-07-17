@@ -14,9 +14,6 @@ from app.clients.openai_client import OpenAIClient
 from app.core.config import Settings, get_settings
 from app.services.chat_service import ChatService
 from app.services.session_store import InMemorySessionStore
-from app.services.stt_service import WhisperSTT
-from app.services.tts_service import OpenAITTS
-from app.services.voice_service import VoiceService
 
 
 # ---------------------------------------------------------------------------
@@ -46,14 +43,3 @@ def get_chat_service(
 ) -> ChatService:
     """Inject a ChatService with its dependencies resolved."""
     return ChatService(client, store, settings)
-
-
-def get_voice_service(
-    client: OpenAIClient = Depends(get_openai_client),
-    chat_service: ChatService = Depends(get_chat_service),
-    settings: Settings = Depends(get_settings),
-) -> VoiceService:
-    """Inject a VoiceService with its STT / TTS providers resolved."""
-    stt = WhisperSTT(client)
-    tts = OpenAITTS(client)
-    return VoiceService(stt, chat_service, tts, settings)

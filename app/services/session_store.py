@@ -18,7 +18,7 @@ from typing import Protocol
 
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.models.chat import ConversationMessage
+from app.models.chat import ConversationMessage, SessionOutcomeResponse
 
 logger = get_logger(__name__)
 
@@ -50,6 +50,14 @@ class SessionStore(Protocol):
         """Get the configured system prompt for a session, if any."""
         ...
 
+    async def get_outcome(self, session_id: str) -> SessionOutcomeResponse | None:
+        """Return a cached outcome for the session, if one exists."""
+        ...
+
+    async def set_outcome(self, session_id: str, outcome: SessionOutcomeResponse) -> None:
+        """Cache an outcome for the session."""
+        ...
+
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +72,7 @@ class _SessionState:
         self.last_active: float = time.monotonic()
         self.lock: asyncio.Lock = asyncio.Lock()
         self.system_prompt: str | None = None
+        self.outcome: SessionOutcomeResponse | None = None
 
 
 class InMemorySessionStore:
@@ -119,6 +128,22 @@ class InMemorySessionStore:
         async with state.lock:
             self._touch(state)
             return state.system_prompt
+
+    async def get_outcome(self, session_id: str) -> SessionOutcomeResponse | None:
+        """Return a cached outcome for the session, if one exists."""
+        state = await self._get_state(session_id)
+        if state is None:
+            return None
+        async with state.lock:
+            self._touch(state)
+            return state.outcome.model_copy(deep=True) if state.outcome is not None else None
+
+    async def set_outcome(self, session_id: str, outcome: SessionOutcomeResponse) -> None:
+        """Cache an outcome for the session."""
+        state = await self._get_or_create_state(session_id)
+        async with state.lock:
+            state.outcome = outcome.model_copy(deep=True)
+            self._touch(state)
 
     # ------------------------------------------------------------------
     # Helpers

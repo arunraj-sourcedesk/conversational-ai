@@ -1,13 +1,19 @@
-from app.models.chat import ChatRequest, ChatResponse, ConversationMessage, StreamChunk
+from app.models.chat import (
+    ChatRequest,
+    ChatResponse,
+    ConversationMessage,
+    HighPriorityDiscovery,
+    NiceToHaveDetails,
+    SessionOutcomeResponse,
+)
 from app.models.health import HealthResponse
-from app.models.voice import VoiceChatMetadata, VoiceStreamChunk
 
 __all__ = [
     "ChatRequest",
     "ChatResponse",
     "ConversationMessage",
-    "StreamChunk",
+    "HighPriorityDiscovery",
+    "NiceToHaveDetails",
+    "SessionOutcomeResponse",
     "HealthResponse",
-    "VoiceChatMetadata",
-    "VoiceStreamChunk",
 ]

@@ -39,16 +39,6 @@ class Settings(BaseSettings):
     openai_timeout: float = Field(default=30.0, env="OPENAI_TIMEOUT")
     openai_max_retries: int = Field(default=3, env="OPENAI_MAX_RETRIES")
 
-    # --- STT (Speech-to-Text) ---
-    stt_provider: str = Field(default="openai_whisper", env="STT_PROVIDER")
-    stt_model: str = Field(default="whisper-1", env="STT_MODEL")
-
-    # --- TTS (Text-to-Speech) ---
-    tts_provider: str = Field(default="openai_tts", env="TTS_PROVIDER")
-    tts_model: str = Field(default="tts-1", env="TTS_MODEL")
-    tts_voice: str = Field(default="alloy", env="TTS_VOICE")
-    tts_audio_format: str = Field(default="mp3", env="TTS_AUDIO_FORMAT")
-
     # --- Session Memory ---
     session_max_messages: int = Field(default=20, env="SESSION_MAX_MESSAGES")
     session_ttl_seconds: int = Field(default=3600, env="SESSION_TTL_SECONDS")
@@ -62,7 +52,6 @@ class Settings(BaseSettings):
 
     # --- Request ---
     request_timeout: float = Field(default=60.0, env="REQUEST_TIMEOUT")
-    max_audio_size_mb: int = Field(default=25, env="MAX_AUDIO_SIZE_MB")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
 

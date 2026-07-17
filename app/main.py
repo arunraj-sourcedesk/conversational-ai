@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
-from app.routes import chat_router, health_router, voice_router
+from app.routes import chat_router, health_router
 from app.utils.middleware import ExceptionHandlerMiddleware, RequestLoggingMiddleware
 
 # Configure logging before anything else
@@ -63,9 +63,8 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "Production-grade conversational AI service with text and voice APIs. "
-            "Supports streaming (SSE for text, chunked for audio) and "
-            "non-streaming modes."
+            "Production-grade conversational AI service with text chat APIs. "
+            "Supports non-streaming chat completions."
         ),
         docs_url="/docs",
         redoc_url="/redoc",
@@ -96,7 +95,6 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------------
     application.include_router(health_router)
     application.include_router(chat_router)
-    application.include_router(voice_router)
 
     return application
 

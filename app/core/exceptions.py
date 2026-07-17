@@ -19,20 +19,6 @@ class LLMError(AppError):
         super().__init__(message, status_code=502)
 
 
-class STTError(AppError):
-    """Raised when speech-to-text transcription fails."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, status_code=502)
-
-
-class TTSError(AppError):
-    """Raised when text-to-speech synthesis fails."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, status_code=502)
-
-
 class ValidationError(AppError):
     """Raised on invalid input."""
 
@@ -45,10 +31,3 @@ class TimeoutError(AppError):
 
     def __init__(self, message: str = "Request timed out") -> None:
         super().__init__(message, status_code=504)
-
-
-class AudioProcessingError(AppError):
-    """Raised on audio file issues."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, status_code=400)

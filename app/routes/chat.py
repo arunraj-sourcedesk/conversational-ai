@@ -3,15 +3,9 @@ Text chat routes.
 
 Endpoints:
   POST /chat         — non-streaming, returns full JSON response
-  POST /chat/stream  — SSE streaming, yields token deltas
 """
 
-import asyncio
-import json
-from collections.abc import AsyncGenerator
-
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Query
 
 from app.core.logging import get_logger
 from app.models.chat import (
@@ -23,6 +17,7 @@ from app.models.chat import (
     CreateSessionResponse,
     SessionMemoryResponse,
     SessionMetadata,
+    SessionOutcomeResponse,
 )
 from app.services.chat_service import ChatService
 from app.services.session_store import InMemorySessionStore
@@ -54,7 +49,11 @@ async def create_session(
         client_id=body.client_id,
         lead_id=body.lead_id,
     )
-    return CreateSessionResponse(session_id=session_id)
+    return CreateSessionResponse(
+        session_id=session_id,
+        system_prompt=body.system_prompt,
+        greeting_message=body.greeting_message,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -94,69 +93,6 @@ async def chat(
     )
 
 
-# ---------------------------------------------------------------------------
-# POST /chat/stream  — SSE streaming
-# ---------------------------------------------------------------------------
-
-@router.post(
-    "/stream",
-    summary="Streaming chat via Server-Sent Events",
-    description=(
-        "Stream token deltas in real time using SSE (text/event-stream). "
-        "Each event is a JSON object: `{\"delta\": \"...\", \"done\": false}`. "
-        "A final `{\"delta\": \"\", \"done\": true}` signals end-of-stream."
-    ),
-    response_class=StreamingResponse,
-)
-async def chat_stream(
-    body: ChatRequest,
-    request: Request,
-    service: ChatService = Depends(get_chat_service),
-) -> StreamingResponse:
-    """
-    Streaming text chat via Server-Sent Events.
-
-    Clients should consume the event stream and concatenate `delta` values
-    until they receive a chunk with `done: true`.
-    """
-
-    async def event_generator() -> AsyncGenerator[str, None]:
-        try:
-            async for token in service.chat_stream(
-                session_id=body.session_id,
-                message=body.message,
-                system_prompt=body.system_prompt,
-                temperature=body.temperature,
-                max_tokens=body.max_tokens,
-            ):
-                # Check if the client has disconnected
-                if await request.is_disconnected():
-                    logger.info("SSE client disconnected session=%s", body.session_id)
-                    break
-
-                payload = json.dumps({"delta": token, "done": False})
-                yield f"data: {payload}\n\n"
-
-            # End-of-stream marker
-            yield f"data: {json.dumps({'delta': '', 'done': True})}\n\n"
-
-        except asyncio.CancelledError:
-            logger.info("SSE stream cancelled session=%s", body.session_id)
-        except Exception as exc:
-            logger.exception("SSE stream error session=%s: %s", body.session_id, exc)
-            error_payload = json.dumps({"error": str(exc), "done": True})
-            yield f"data: {error_payload}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",   # Disable Nginx buffering
-            "Connection": "keep-alive",
-        },
-    )
-
 
 # ---------------------------------------------------------------------------
 # GET /chat/sessions  — list persisted sessions
@@ -182,6 +118,8 @@ async def list_sessions(
             sessionId=item["session_id"],
             clientId=item["client_id"],
             leadId=item["lead_id"],
+            systemPrompt=item.get("system_prompt"),
+            greetingMessage=item.get("greeting_message"),
             createdAt=item["created_at"],
             updatedAt=item["updated_at"],
         )
@@ -205,11 +143,12 @@ async def get_history(
     page_size: int = Query(default=100, ge=1, le=500, alias="pageSize"),
 ) -> ChatHistoryResponse:
     """Get chat history for a session."""
-    from app.utils.db import get_chat_history
+    from app.utils.db import get_chat_history, get_session
 
     page = max(1, page)
     page_size = min(max(1, page_size), 500)
     history = await get_chat_history(session_id, page=page, page_size=page_size)
+    session_data = await get_session(session_id)
     messages = [
         ChatHistoryMessage(
             sender="AI" if item["role"] == "assistant" else "USER",
@@ -222,10 +161,26 @@ async def get_history(
     ]
     return ChatHistoryResponse(
         session_id=session_id,
+        system_prompt=session_data.get("system_prompt") if session_data else None,
+        greeting_message=session_data.get("greeting_message") if session_data else None,
         page=page,
         page_size=page_size,
         messages=messages,
     )
+
+
+@router.get(
+    "/sessions/{session_id}/outcome",
+    response_model=SessionOutcomeResponse,
+    summary="Summarize the outcome of a session",
+    description="Use the chat history for a session and an LLM to produce a structured outcome summary.",
+)
+async def get_session_outcome(
+    session_id: str,
+    service: ChatService = Depends(get_chat_service),
+) -> SessionOutcomeResponse:
+    """Generate a structured outcome summary for the session."""
+    return await service.get_session_outcome(session_id)
 
 
 @router.get(
@@ -239,10 +194,14 @@ async def get_session_memory(
     store: InMemorySessionStore = Depends(get_session_store),
 ) -> SessionMemoryResponse:
     """Get current session-store data for a session."""
+    from app.utils.db import get_session
+
     history = await store.get_history(session_id)
     system_prompt = await store.get_system_prompt(session_id)
+    session_data = await get_session(session_id)
     return SessionMemoryResponse(
         session_id=session_id,
         system_prompt=system_prompt,
+        greeting_message=session_data.get("greeting_message") if session_data else None,
         messages=history,
     )

@@ -12,12 +12,16 @@ This module is the single authoritative place where conversation
 context is assembled; routes must not build raw OpenAI message dicts.
 """
 
-from collections.abc import AsyncGenerator
-
 from app.clients.openai_client import OpenAIClient
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.models.chat import ConversationMessage, IntentExtraction
+from app.models.chat import (
+    ConversationMessage,
+    HighPriorityDiscovery,
+    IntentExtraction,
+    NiceToHaveDetails,
+    SessionOutcomeResponse,
+)
 from app.services.session_store import InMemorySessionStore
 
 logger = get_logger(__name__)
@@ -66,7 +70,13 @@ class ChatService:
             )
 
         # Persist the session metadata and optional greeting message before returning.
-        await self._save_session_db(session_id, client_id, lead_id, greeting_message)
+        await self._save_session_db(
+            session_id,
+            client_id,
+            lead_id,
+            system_prompt,
+            greeting_message,
+        )
 
         logger.info("create_session session=%s", session_id)
         return session_id
@@ -76,15 +86,34 @@ class ChatService:
         session_id: str,
         client_id: str | None,
         lead_id: str | None,
+        system_prompt: str | None,
         greeting_message: str | None,
     ) -> None:
         try:
             from app.utils.db import save_session, save_message
-            await save_session(session_id, client_id, lead_id)
+            await save_session(
+                session_id,
+                client_id,
+                lead_id,
+                system_prompt=system_prompt,
+                greeting_message=greeting_message,
+            )
             if greeting_message:
                 await save_message(session_id, "assistant", greeting_message)
         except Exception as e:
             logger.error("Failed to save session metadata to DB for session %s: %s", session_id, e)
+
+    async def _save_session_outcome_db(self, session_id: str, outcome: SessionOutcomeResponse) -> None:
+        try:
+            from app.utils.db import save_session
+            await save_session(
+                session_id,
+                None,
+                None,
+                outcome_data=outcome.model_dump(mode="json"),
+            )
+        except Exception as e:
+            logger.error("Failed to save session outcome to DB for session %s: %s", session_id, e)
 
     # ------------------------------------------------------------------
     # Non-streaming
@@ -162,43 +191,163 @@ class ChatService:
 
         return reply, tokens, None
 
-    # ------------------------------------------------------------------
-    # Streaming
-    # ------------------------------------------------------------------
+    async def get_session_outcome(self, session_id: str) -> SessionOutcomeResponse:
+        """Summarize a session using the conversation history and an LLM."""
+        cached_outcome = await self._sessions.get_outcome(session_id)
+        if cached_outcome is not None:
+            return cached_outcome
 
-    async def chat_stream(
-        self,
-        session_id: str,
-        message: str,
-        system_prompt: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 1024,
-    ) -> AsyncGenerator[str, None]:
-        """
-        Streaming chat turn.
+        history = await self._sessions.get_history(session_id)
 
-        Yields token deltas. Persists the full reply to session memory
-        once streaming completes.
-        """
-        messages = await self._build_messages(session_id, message, system_prompt)
+        if not history:
+            try:
+                from app.utils.db import get_chat_history
 
-        full_reply_parts: list[str] = []
+                rows = await get_chat_history(session_id, page=1, page_size=200)
+                history = [
+                    ConversationMessage(role=item["role"], content=item["message"])
+                    for item in rows
+                ]
+            except Exception as exc:
+                logger.warning("No session history available for %s: %s", session_id, exc)
 
-        async for token in self._client.chat_stream(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        ):
-            full_reply_parts.append(token)
-            yield token
+        if not history:
+            outcome = SessionOutcomeResponse(
+                attendance_intent=False,
+                reschedule_intent=False,
+                cancel_intent=False,
+                high_priority_discovery=HighPriorityDiscovery(),
+                document_readiness_confirmation="No conversation history was available.",
+                questions_for_jordan=[],
+                nice_to_have=None,
+            )
+            await self._sessions.set_outcome(session_id, outcome)
+            await self._save_session_outcome_db(session_id, outcome)
+            return outcome
 
-        full_reply = "".join(full_reply_parts)
-        await self._persist_turn(session_id, message, full_reply, persist_db=False)
-        logger.info("chat_stream session=%s chars=%d", session_id, len(full_reply))
+        conversation_text = "\n".join(
+            f"{'USER' if message.role == 'user' else 'AI'}: {message.content}"
+            for message in history
+        )
+
+        prompt = (
+            "You are summarizing a sales discovery call. Follow this priority order exactly:\n"
+            "1. Decide whether the lead intends to attend, reschedule, or cancel. Return boolean flags for attendance_intent, reschedule_intent, and cancel_intent.\n"
+            "2. Capture the three high-priority discovery answers in this order: business type & tenure; current software & books status; primary pain / why now.\n"
+            "3. Confirm whether document readiness is confirmed or not.\n"
+            "4. Capture any questions the lead wants Jordan to address.\n"
+            "5. If present, include optional nice-to-have details: transaction volume, payroll, decision-makers, timeline.\n"
+            "Tie-breaker: if the lead seems happy and wants to end warmly, prioritize a warm close and leave missing items blank or empty rather than forcing weak guesses.\n"
+            "Return ONLY a JSON object with the schema: {"
+            '"attendance_intent": false, '
+            '"reschedule_intent": false, '
+            '"cancel_intent": false, '
+            '"high_priority_discovery": {"business_type_and_tenure": "", "current_software_and_books_status": "", "primary_pain_and_why_now": ""}, '
+            '"document_readiness_confirmation": "", '
+            '"questions_for_jordan": [], '
+            '"nice_to_have": {"transaction_volume": "", "payroll": "", "decision_makers": "", "timeline": ""}}'
+        )
+
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": f"Conversation history:\n{conversation_text}"},
+        ]
+
+        try:
+            content, _ = await self._client.chat_complete(
+                messages=messages,
+                temperature=0.1,
+                max_tokens=1200,
+                response_format={"type": "json_object"},
+            )
+            import json
+
+            payload = json.loads(content)
+            normalized_payload = self._normalize_session_outcome_payload(payload)
+            outcome = SessionOutcomeResponse.model_validate(normalized_payload)
+            await self._sessions.set_outcome(session_id, outcome)
+            await self._save_session_outcome_db(session_id, outcome)
+            return outcome
+        except Exception as exc:
+            logger.error("Failed to summarize session outcome for %s: %s", session_id, exc)
+            outcome = SessionOutcomeResponse(
+                attendance_intent=False,
+                reschedule_intent=False,
+                cancel_intent=False,
+                high_priority_discovery=HighPriorityDiscovery(),
+                document_readiness_confirmation="",
+                questions_for_jordan=[],
+                nice_to_have=None,
+            )
+            await self._sessions.set_outcome(session_id, outcome)
+            await self._save_session_outcome_db(session_id, outcome)
+            return outcome
+
+    def _normalize_session_outcome_payload(self, payload: dict) -> dict:
+        """Normalize the LLM payload into a safe response structure."""
+        if any(key in payload for key in {"attendance_intent", "reschedule_intent", "cancel_intent"}):
+            attendance_intent = self._coerce_bool(payload.get("attendance_intent"))
+            reschedule_intent = self._coerce_bool(payload.get("reschedule_intent"))
+            cancel_intent = self._coerce_bool(payload.get("cancel_intent"))
+        else:
+            meeting_attendance = str(payload.get("meeting_attendance", "")).strip().lower()
+            if meeting_attendance in {"yes"}:
+                attendance_intent, reschedule_intent, cancel_intent = True, False, False
+            elif meeting_attendance in {"reschedule"}:
+                attendance_intent, reschedule_intent, cancel_intent = False, True, False
+            elif meeting_attendance in {"no", "cancel", "declin", "decline", "cancelled", "declined"}:
+                attendance_intent, reschedule_intent, cancel_intent = False, False, True
+            else:
+                attendance_intent, reschedule_intent, cancel_intent = False, False, False
+
+        discovery_payload = payload.get("high_priority_discovery") or {}
+        high_priority_discovery = HighPriorityDiscovery(
+            business_type_and_tenure=str(discovery_payload.get("business_type_and_tenure", "")).strip(),
+            current_software_and_books_status=str(discovery_payload.get("current_software_and_books_status", "")).strip(),
+            primary_pain_and_why_now=str(discovery_payload.get("primary_pain_and_why_now", "")).strip(),
+        )
+
+        nice_to_have_payload = payload.get("nice_to_have") or {}
+        nice_to_have = NiceToHaveDetails(
+            transaction_volume=str(nice_to_have_payload.get("transaction_volume", "") or "").strip() or None,
+            payroll=str(nice_to_have_payload.get("payroll", "") or "").strip() or None,
+            decision_makers=str(nice_to_have_payload.get("decision_makers", "") or "").strip() or None,
+            timeline=str(nice_to_have_payload.get("timeline", "") or "").strip() or None,
+        )
+        if nice_to_have.transaction_volume is None and nice_to_have.payroll is None and nice_to_have.decision_makers is None and nice_to_have.timeline is None:
+            nice_to_have = None
+
+        questions = payload.get("questions_for_jordan") or []
+        if isinstance(questions, str):
+            questions = [q.strip() for q in questions.split(";") if q.strip()]
+        elif not isinstance(questions, list):
+            questions = []
+
+        return {
+            "attendance_intent": attendance_intent,
+            "reschedule_intent": reschedule_intent,
+            "cancel_intent": cancel_intent,
+            "high_priority_discovery": high_priority_discovery.model_dump(),
+            "document_readiness_confirmation": str(payload.get("document_readiness_confirmation", "")).strip(),
+            "questions_for_jordan": questions,
+            "nice_to_have": nice_to_have.model_dump() if nice_to_have is not None else None,
+        }
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _coerce_bool(self, value: object) -> bool:
+        """Coerce common boolean-like values into a Python bool."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "yes", "y", "1"}:
+                return True
+            if normalized in {"false", "no", "n", "0", ""}:
+                return False
+        return bool(value)
 
     async def _build_messages(
         self,

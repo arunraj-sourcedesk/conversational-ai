@@ -101,6 +101,16 @@ class CreateSessionResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
     session_id: str = Field(..., alias="sessionId", description="Session ID.")
+    system_prompt: str | None = Field(
+        default=None,
+        alias="systemPrompt",
+        description="Configured context (system prompt) for this session.",
+    )
+    greeting_message: str | None = Field(
+        default=None,
+        alias="greetingMessage",
+        description="The initial AI greeting message for the session.",
+    )
 
 
 class SessionMetadata(BaseModel):
@@ -111,6 +121,8 @@ class SessionMetadata(BaseModel):
     session_id: str = Field(..., alias="sessionId")
     client_id: str = Field(..., alias="clientId")
     lead_id: str = Field(..., alias="leadId")
+    system_prompt: str | None = Field(default=None, alias="systemPrompt")
+    greeting_message: str | None = Field(default=None, alias="greetingMessage")
     created_at: str = Field(..., alias="createdAt")
     updated_at: str = Field(..., alias="updatedAt")
 
@@ -133,6 +145,8 @@ class ChatHistoryResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
     session_id: str = Field(..., alias="sessionId")
+    system_prompt: str | None = Field(default=None, alias="systemPrompt")
+    greeting_message: str | None = Field(default=None, alias="greetingMessage")
     page: int = Field(...)
     page_size: int = Field(..., alias="pageSize")
     messages: list[ChatHistoryMessage]
@@ -156,7 +170,64 @@ class SessionMemoryResponse(BaseModel):
         alias="systemPrompt",
         description="Configured system prompt for this in-memory session.",
     )
+    greeting_message: str | None = Field(
+        default=None,
+        alias="greetingMessage",
+        description="The initial greeting message stored for this session.",
+    )
     messages: list[ConversationMessage]
+
+
+class HighPriorityDiscovery(BaseModel):
+    """The three highest-priority discovery answers from the call."""
+
+    business_type_and_tenure: str = Field(default="", description="Business type and tenure summary.")
+    current_software_and_books_status: str = Field(default="", description="Current software and books status summary.")
+    primary_pain_and_why_now: str = Field(default="", description="Primary pain and why now summary.")
+
+
+class NiceToHaveDetails(BaseModel):
+    """Optional follow-up details that help the rep prepare."""
+
+    transaction_volume: str | None = Field(default=None, description="Estimated transaction volume.")
+    payroll: str | None = Field(default=None, description="Payroll-related details.")
+    decision_makers: str | None = Field(default=None, description="Known decision-makers.")
+    timeline: str | None = Field(default=None, description="Timeline or urgency details.")
+
+
+class SessionOutcomeResponse(BaseModel):
+    """Structured outcome summary for a completed or partial call session."""
+
+    model_config = {"populate_by_name": True}
+
+    attendance_intent: bool = Field(
+        ...,
+        description="Whether the lead intends to attend the meeting.",
+    )
+    reschedule_intent: bool = Field(
+        default=False,
+        description="Whether the lead intends to reschedule the meeting.",
+    )
+    cancel_intent: bool = Field(
+        default=False,
+        description="Whether the lead intends to cancel the meeting.",
+    )
+    high_priority_discovery: HighPriorityDiscovery = Field(
+        default_factory=HighPriorityDiscovery,
+        description="The three high-priority discovery answers.",
+    )
+    document_readiness_confirmation: str = Field(
+        default="",
+        description="Confirmation of whether documents are ready for the meeting.",
+    )
+    questions_for_jordan: list[str] = Field(
+        default_factory=list,
+        description="Questions the lead wants Jordan to address.",
+    )
+    nice_to_have: NiceToHaveDetails | None = Field(
+        default=None,
+        description="Optional extra context such as transaction volume, payroll, and timeline.",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -172,8 +243,3 @@ class ChatResponse(BaseModel):
     )
 
 
-class StreamChunk(BaseModel):
-    """A single SSE data chunk for POST /chat/stream."""
-
-    delta: str = Field(..., description="Partial token text.")
-    done: bool = Field(default=False, description="True on the final chunk.")
