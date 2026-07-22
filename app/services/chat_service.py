@@ -17,9 +17,7 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.models.chat import (
     ConversationMessage,
-    HighPriorityDiscovery,
     IntentExtraction,
-    NiceToHaveDetails,
     SessionOutcomeResponse,
 )
 from app.services.session_store import InMemorySessionStore
@@ -115,6 +113,71 @@ class ChatService:
         except Exception as e:
             logger.error("Failed to save session outcome to DB for session %s: %s", session_id, e)
 
+    async def get_session_notes(self, session_id: str, history: list[ConversationMessage] | list[dict] | None = None) -> str | None:
+        """Return persisted session notes or generate and store them from the conversation history."""
+        from app.utils.db import get_session, save_session
+
+        session_data = await get_session(session_id)
+        existing_notes = (session_data or {}).get("notes")
+        if existing_notes:
+            return str(existing_notes).strip()
+
+        if history is None:
+            history = await self._sessions.get_history(session_id)
+
+        conversation_text = self._format_conversation_for_notes(history)
+        if not conversation_text:
+            return None
+
+        prompt = (
+            "You are generating concise post-meeting notes for a sales conversation. "
+            "Summarize the discussion, capture the main takeaways, and include suggested next steps. "
+            "Return plain text with short bullets or paragraphs."
+        )
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": f"Conversation history:\n{conversation_text}"},
+        ]
+
+        try:
+            content, _ = await self._client.chat_complete(
+                messages=messages,
+                temperature=0.2,
+                max_tokens=800,
+            )
+            notes = str(content or "").strip()
+            if notes:
+                await save_session(session_id, None, None, notes=notes)
+                return notes
+        except Exception as exc:
+            logger.warning("Failed to generate session notes for %s: %s", session_id, exc)
+
+        return None
+
+    def _format_conversation_for_notes(self, history: list[ConversationMessage] | list[dict] | None) -> str:
+        """Convert conversation items into a text block suitable for an LLM prompt."""
+        if not history:
+            return ""
+
+        formatted_lines: list[str] = []
+        for item in history:
+            if isinstance(item, ConversationMessage):
+                role = item.role
+                content = item.content
+            elif isinstance(item, dict):
+                role = item.get("role")
+                content = item.get("content") or item.get("message") or item.get("text")
+            else:
+                role = getattr(item, "role", None)
+                content = getattr(item, "content", None) or getattr(item, "text", None) or getattr(item, "message", None)
+
+            if not role or not content:
+                continue
+            speaker = "USER" if str(role).lower() == "user" else "AI"
+            formatted_lines.append(f"{speaker}: {content}")
+
+        return "\n".join(formatted_lines)
+
     # ------------------------------------------------------------------
     # Non-streaming
     # ------------------------------------------------------------------
@@ -197,6 +260,19 @@ class ChatService:
         if cached_outcome is not None:
             return cached_outcome
 
+        try:
+            from app.utils.db import get_session
+
+            session_data = await get_session(session_id)
+            if session_data and session_data.get("outcome_data"):
+                payload = session_data.get("outcome_data")
+                if isinstance(payload, dict):
+                    outcome = SessionOutcomeResponse.model_validate(payload)
+                    await self._sessions.set_outcome(session_id, outcome)
+                    return outcome
+        except Exception as exc:
+            logger.warning("Failed to load persisted outcome from DB for %s: %s", session_id, exc)
+
         history = await self._sessions.get_history(session_id)
 
         if not history:
@@ -216,10 +292,10 @@ class ChatService:
                 attendance_intent=False,
                 reschedule_intent=False,
                 cancel_intent=False,
-                high_priority_discovery=HighPriorityDiscovery(),
-                document_readiness_confirmation="No conversation history was available.",
-                questions_for_jordan=[],
-                nice_to_have=None,
+                summary="No conversation history was available.",
+                key_points=[],
+                next_steps=[],
+                context={},
             )
             await self._sessions.set_outcome(session_id, outcome)
             await self._save_session_outcome_db(session_id, outcome)
@@ -231,21 +307,17 @@ class ChatService:
         )
 
         prompt = (
-            "You are summarizing a sales discovery call. Follow this priority order exactly:\n"
-            "1. Decide whether the lead intends to attend, reschedule, or cancel. Return boolean flags for attendance_intent, reschedule_intent, and cancel_intent.\n"
-            "2. Capture the three high-priority discovery answers in this order: business type & tenure; current software & books status; primary pain / why now.\n"
-            "3. Confirm whether document readiness is confirmed or not.\n"
-            "4. Capture any questions the lead wants Jordan to address.\n"
-            "5. If present, include optional nice-to-have details: transaction volume, payroll, decision-makers, timeline.\n"
-            "Tie-breaker: if the lead seems happy and wants to end warmly, prioritize a warm close and leave missing items blank or empty rather than forcing weak guesses.\n"
+            "You are summarizing a conversation session for any type of client. Use the entire conversation history to produce a generic outcome summary.\n"
+            "Keep the response generic and client-agnostic, while preserving these three fields exactly: attendance_intent, reschedule_intent, cancel_intent.\n"
+            "Also return a concise summary, a list of key points, a list of suggested next steps, and a small context object with any helpful details from the conversation.\n"
             "Return ONLY a JSON object with the schema: {"
             '"attendance_intent": false, '
             '"reschedule_intent": false, '
             '"cancel_intent": false, '
-            '"high_priority_discovery": {"business_type_and_tenure": "", "current_software_and_books_status": "", "primary_pain_and_why_now": ""}, '
-            '"document_readiness_confirmation": "", '
-            '"questions_for_jordan": [], '
-            '"nice_to_have": {"transaction_volume": "", "payroll": "", "decision_makers": "", "timeline": ""}}'
+            '"summary": "", '
+            '"key_points": [], '
+            '"next_steps": [], '
+            '"context": {}}'
         )
 
         messages = [
@@ -274,10 +346,10 @@ class ChatService:
                 attendance_intent=False,
                 reschedule_intent=False,
                 cancel_intent=False,
-                high_priority_discovery=HighPriorityDiscovery(),
-                document_readiness_confirmation="",
-                questions_for_jordan=[],
-                nice_to_have=None,
+                summary="",
+                key_points=[],
+                next_steps=[],
+                context={},
             )
             await self._sessions.set_outcome(session_id, outcome)
             await self._save_session_outcome_db(session_id, outcome)
@@ -300,37 +372,33 @@ class ChatService:
             else:
                 attendance_intent, reschedule_intent, cancel_intent = False, False, False
 
-        discovery_payload = payload.get("high_priority_discovery") or {}
-        high_priority_discovery = HighPriorityDiscovery(
-            business_type_and_tenure=str(discovery_payload.get("business_type_and_tenure", "")).strip(),
-            current_software_and_books_status=str(discovery_payload.get("current_software_and_books_status", "")).strip(),
-            primary_pain_and_why_now=str(discovery_payload.get("primary_pain_and_why_now", "")).strip(),
-        )
+        summary = str(payload.get("summary", "") or "").strip()
+        key_points = payload.get("key_points") or []
+        if isinstance(key_points, str):
+            key_points = [item.strip() for item in key_points.split(";") if item.strip()]
+        elif not isinstance(key_points, list):
+            key_points = []
 
-        nice_to_have_payload = payload.get("nice_to_have") or {}
-        nice_to_have = NiceToHaveDetails(
-            transaction_volume=str(nice_to_have_payload.get("transaction_volume", "") or "").strip() or None,
-            payroll=str(nice_to_have_payload.get("payroll", "") or "").strip() or None,
-            decision_makers=str(nice_to_have_payload.get("decision_makers", "") or "").strip() or None,
-            timeline=str(nice_to_have_payload.get("timeline", "") or "").strip() or None,
-        )
-        if nice_to_have.transaction_volume is None and nice_to_have.payroll is None and nice_to_have.decision_makers is None and nice_to_have.timeline is None:
-            nice_to_have = None
+        next_steps = payload.get("next_steps") or []
+        if isinstance(next_steps, str):
+            next_steps = [item.strip() for item in next_steps.split(";") if item.strip()]
+        elif not isinstance(next_steps, list):
+            next_steps = []
 
-        questions = payload.get("questions_for_jordan") or []
-        if isinstance(questions, str):
-            questions = [q.strip() for q in questions.split(";") if q.strip()]
-        elif not isinstance(questions, list):
-            questions = []
+        context = payload.get("context") or {}
+        if not isinstance(context, dict):
+            context = {}
+        else:
+            context = {str(key): str(value) for key, value in context.items()}
 
         return {
             "attendance_intent": attendance_intent,
             "reschedule_intent": reschedule_intent,
             "cancel_intent": cancel_intent,
-            "high_priority_discovery": high_priority_discovery.model_dump(),
-            "document_readiness_confirmation": str(payload.get("document_readiness_confirmation", "")).strip(),
-            "questions_for_jordan": questions,
-            "nice_to_have": nice_to_have.model_dump() if nice_to_have is not None else None,
+            "summary": summary,
+            "key_points": key_points,
+            "next_steps": next_steps,
+            "context": context,
         }
 
     # ------------------------------------------------------------------

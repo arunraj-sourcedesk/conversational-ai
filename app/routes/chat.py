@@ -141,6 +141,7 @@ async def get_history(
     session_id: str,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=500, alias="pageSize"),
+    service: ChatService = Depends(get_chat_service),
 ) -> ChatHistoryResponse:
     """Get chat history for a session."""
     from app.utils.db import get_chat_history, get_session
@@ -149,38 +150,39 @@ async def get_history(
     page_size = min(max(1, page_size), 500)
     history = await get_chat_history(session_id, page=page, page_size=page_size)
     session_data = await get_session(session_id)
-    messages = [
+    conversation = [
         ChatHistoryMessage(
-            sender="AI" if item["role"] == "assistant" else "USER",
-            message=item["message"],
+            speaker="AI" if item["role"] == "assistant" else "USER",
+            text=item["message"],
             timestamp=item["created_at"],
             tokens_used=item.get("tokens_used"),
             intent_extraction=item.get("intent_extraction"),
         )
         for item in history
     ]
+    notes = None
+    if session_data and session_data.get("notes"):
+        notes = session_data.get("notes")
+    else:
+        notes = await service.get_session_notes(session_id, history=history)
+
+    outcome = None
+    try:
+        cached_outcome = await service.get_session_outcome(session_id)
+        outcome = cached_outcome
+    except Exception:
+        outcome = None
+
     return ChatHistoryResponse(
         session_id=session_id,
         system_prompt=session_data.get("system_prompt") if session_data else None,
         greeting_message=session_data.get("greeting_message") if session_data else None,
         page=page,
         page_size=page_size,
-        messages=messages,
+        conversation=conversation,
+        notes=notes,
+        outcome=outcome,
     )
-
-
-@router.get(
-    "/sessions/{session_id}/outcome",
-    response_model=SessionOutcomeResponse,
-    summary="Summarize the outcome of a session",
-    description="Use the chat history for a session and an LLM to produce a structured outcome summary.",
-)
-async def get_session_outcome(
-    session_id: str,
-    service: ChatService = Depends(get_chat_service),
-) -> SessionOutcomeResponse:
-    """Generate a structured outcome summary for the session."""
-    return await service.get_session_outcome(session_id)
 
 
 @router.get(

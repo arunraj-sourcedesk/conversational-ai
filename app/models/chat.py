@@ -3,6 +3,8 @@ Pydantic models for text-based chat endpoints.
 Strict typing ensures clean validation and OpenAPI schema generation.
 """
 
+from __future__ import annotations
+
 from pydantic import BaseModel, Field
 
 
@@ -130,8 +132,10 @@ class SessionMetadata(BaseModel):
 class ChatHistoryMessage(BaseModel):
     """Single chat message returned by history APIs."""
 
-    sender: str = Field(..., description="USER or AI")
-    message: str = Field(...)
+    model_config = {"populate_by_name": True}
+
+    speaker: str = Field(..., alias="speaker", description="USER or AI")
+    text: str = Field(..., alias="text")
     timestamp: str = Field(...)
     tokens_used: int | None = Field(default=None, description="Tokens consumed (assistant rows only).")
     intent_extraction: IntentExtraction | None = Field(
@@ -149,7 +153,9 @@ class ChatHistoryResponse(BaseModel):
     greeting_message: str | None = Field(default=None, alias="greetingMessage")
     page: int = Field(...)
     page_size: int = Field(..., alias="pageSize")
-    messages: list[ChatHistoryMessage]
+    conversation: list[ChatHistoryMessage] = Field(..., alias="conversation")
+    notes: str | None = Field(default=None, description="Generated session notes.")
+    outcome: SessionOutcomeResponse | None = Field(default=None, description="Structured session outcome summary.")
 
 
 class ConversationMessage(BaseModel):
@@ -178,25 +184,8 @@ class SessionMemoryResponse(BaseModel):
     messages: list[ConversationMessage]
 
 
-class HighPriorityDiscovery(BaseModel):
-    """The three highest-priority discovery answers from the call."""
-
-    business_type_and_tenure: str = Field(default="", description="Business type and tenure summary.")
-    current_software_and_books_status: str = Field(default="", description="Current software and books status summary.")
-    primary_pain_and_why_now: str = Field(default="", description="Primary pain and why now summary.")
-
-
-class NiceToHaveDetails(BaseModel):
-    """Optional follow-up details that help the rep prepare."""
-
-    transaction_volume: str | None = Field(default=None, description="Estimated transaction volume.")
-    payroll: str | None = Field(default=None, description="Payroll-related details.")
-    decision_makers: str | None = Field(default=None, description="Known decision-makers.")
-    timeline: str | None = Field(default=None, description="Timeline or urgency details.")
-
-
 class SessionOutcomeResponse(BaseModel):
-    """Structured outcome summary for a completed or partial call session."""
+    """Generic structured outcome summary for a completed or partial conversation session."""
 
     model_config = {"populate_by_name": True}
 
@@ -212,21 +201,21 @@ class SessionOutcomeResponse(BaseModel):
         default=False,
         description="Whether the lead intends to cancel the meeting.",
     )
-    high_priority_discovery: HighPriorityDiscovery = Field(
-        default_factory=HighPriorityDiscovery,
-        description="The three high-priority discovery answers.",
-    )
-    document_readiness_confirmation: str = Field(
+    summary: str = Field(
         default="",
-        description="Confirmation of whether documents are ready for the meeting.",
+        description="Generic summary of the session outcome.",
     )
-    questions_for_jordan: list[str] = Field(
+    key_points: list[str] = Field(
         default_factory=list,
-        description="Questions the lead wants Jordan to address.",
+        description="Main points captured from the session conversation.",
     )
-    nice_to_have: NiceToHaveDetails | None = Field(
-        default=None,
-        description="Optional extra context such as transaction volume, payroll, and timeline.",
+    next_steps: list[str] = Field(
+        default_factory=list,
+        description="Suggested next steps based on the conversation.",
+    )
+    context: dict[str, object] = Field(
+        default_factory=dict,
+        description="Additional generic context extracted from the session.",
     )
 
 

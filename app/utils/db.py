@@ -119,6 +119,19 @@ def _init_db_sync() -> None:
                     ADD COLUMN outcome_data JSON NULL;
                 """)
 
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME   = 'callbot_sessions'
+                  AND COLUMN_NAME  = 'notes';
+            """)
+            (col_exists,) = cursor.fetchone()
+            if not col_exists:
+                cursor.execute("""
+                    ALTER TABLE callbot_sessions
+                    ADD COLUMN notes TEXT NULL;
+                """)
+
             # Add tokens_used column to callbot_chats if it doesn't exist yet.
             cursor.execute("""
                 SELECT COUNT(*) FROM information_schema.COLUMNS
@@ -188,6 +201,7 @@ def _save_session_sync(
     greeting_message: str | None,
     timestamp: datetime | None,
     outcome_data: dict | None = None,
+    notes: str | None = None,
 ) -> None:
     """Insert or update session metadata synchronously."""
     conn = get_connection()
@@ -197,14 +211,15 @@ def _save_session_sync(
         with conn.cursor() as cursor:
             cursor.execute("""
                 INSERT INTO callbot_sessions (
-                    session_id, client_id, lead_id, system_prompt, greeting_message, outcome_data, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    session_id, client_id, lead_id, system_prompt, greeting_message, outcome_data, notes, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     client_id = COALESCE(%s, client_id),
                     lead_id = COALESCE(%s, lead_id),
                     system_prompt = COALESCE(%s, system_prompt),
                     greeting_message = COALESCE(%s, greeting_message),
                     outcome_data = COALESCE(%s, outcome_data),
+                    notes = COALESCE(%s, notes),
                     updated_at = %s,
                     created_at = COALESCE(%s, created_at)
             """, (
@@ -214,6 +229,7 @@ def _save_session_sync(
                 system_prompt,
                 greeting_message,
                 outcome_json,
+                notes,
                 ts,
                 ts,
                 client_id,
@@ -221,6 +237,7 @@ def _save_session_sync(
                 system_prompt,
                 greeting_message,
                 outcome_json,
+                notes,
                 ts,
                 ts,
             ))
@@ -239,6 +256,7 @@ async def save_session(
     greeting_message: str | None = None,
     timestamp: datetime | None = None,
     outcome_data: dict | None = None,
+    notes: str | None = None,
 ) -> None:
     """Insert or update session metadata asynchronously."""
     await asyncio.to_thread(
@@ -250,6 +268,7 @@ async def save_session(
         greeting_message,
         timestamp,
         outcome_data,
+        notes,
     )
 
 
@@ -315,7 +334,7 @@ def _get_session_list_sync(
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             query = [
-                "SELECT session_id, client_id, lead_id, system_prompt, greeting_message, outcome_data, created_at, updated_at",
+                "SELECT session_id, client_id, lead_id, system_prompt, greeting_message, outcome_data, notes, created_at, updated_at",
                 "FROM callbot_sessions",
             ]
             params: list[object] = []
@@ -357,7 +376,7 @@ def _get_session_sync(session_id: str) -> dict | None:
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute("""
-                SELECT session_id, client_id, lead_id, system_prompt, greeting_message, outcome_data, created_at, updated_at
+                SELECT session_id, client_id, lead_id, system_prompt, greeting_message, outcome_data, notes, created_at, updated_at
                 FROM callbot_sessions
                 WHERE session_id = %s
             """, (session_id,))

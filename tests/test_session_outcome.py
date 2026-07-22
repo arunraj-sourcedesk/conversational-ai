@@ -28,7 +28,7 @@ class SessionOutcomeServiceTests(unittest.IsolatedAsyncioTestCase):
         settings = Settings()
         self.store = InMemorySessionStore(settings)
         self.fake_client = FakeOpenAIClient(
-            '{"attendance_intent": true, "reschedule_intent": false, "cancel_intent": false, "high_priority_discovery": {"business_type_and_tenure": "SaaS company, 6 years", "current_software_and_books_status": "QuickBooks Online, books are current", "primary_pain_and_why_now": "Need cleaner reporting for growth"}, "document_readiness_confirmation": "Documents are ready", "questions_for_jordan": ["Can you walk me through implementation?"], "nice_to_have": {"transaction_volume": "100/month", "payroll": "No", "decision_makers": "Owner and controller", "timeline": "Next 2 weeks"}}'
+            '{"attendance_intent": true, "reschedule_intent": false, "cancel_intent": false, "summary": "Discussed a business need and follow-up plan", "key_points": ["Client shared goals", "Needs follow-up"], "next_steps": ["Send proposal", "Book next conversation"], "context": {"topic": "business need"}}'
         )
         self.service = ChatService(self.fake_client, self.store, settings)
 
@@ -43,16 +43,23 @@ class SessionOutcomeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(outcome.attendance_intent)
         self.assertFalse(outcome.reschedule_intent)
         self.assertFalse(outcome.cancel_intent)
-        self.assertEqual(outcome.high_priority_discovery.business_type_and_tenure, "SaaS company, 6 years")
-        self.assertEqual(outcome.high_priority_discovery.current_software_and_books_status, "QuickBooks Online, books are current")
-        self.assertEqual(outcome.high_priority_discovery.primary_pain_and_why_now, "Need cleaner reporting for growth")
-        self.assertEqual(outcome.document_readiness_confirmation, "Documents are ready")
-        self.assertEqual(outcome.questions_for_jordan, ["Can you walk me through implementation?"])
-        self.assertEqual(outcome.nice_to_have.transaction_volume, "100/month")
-        self.assertEqual(outcome.nice_to_have.payroll, "No")
-        self.assertEqual(outcome.nice_to_have.decision_makers, "Owner and controller")
-        self.assertEqual(outcome.nice_to_have.timeline, "Next 2 weeks")
-        self.assertIn("We run a SaaS company", self.fake_client.messages[-1]["content"])
+        self.assertEqual(outcome.summary, "Discussed a business need and follow-up plan")
+        self.assertEqual(outcome.key_points, ["Client shared goals", "Needs follow-up"])
+        self.assertEqual(outcome.next_steps, ["Send proposal", "Book next conversation"])
+        self.assertEqual(outcome.context, {"topic": "business need"})
+
+    async def test_get_session_outcome_accepts_generic_payload(self):
+        await self.store.create_session("session-456")
+        await self.store.append("session-456", ConversationMessage(role="user", content="Need help with the current issue"))
+        self.fake_client.payload = '{"attendance_intent": true, "reschedule_intent": false, "cancel_intent": false, "summary": "Discussed a business need and follow-up plan", "key_points": ["Client shared goals", "Needs follow-up"], "next_steps": ["Send proposal", "Book next conversation"], "context": {"topic": "business need"}}'
+
+        outcome = await self.service.get_session_outcome("session-456")
+
+        self.assertTrue(outcome.attendance_intent)
+        self.assertEqual(outcome.summary, "Discussed a business need and follow-up plan")
+        self.assertEqual(outcome.key_points, ["Client shared goals", "Needs follow-up"])
+        self.assertEqual(outcome.next_steps, ["Send proposal", "Book next conversation"])
+        self.assertEqual(outcome.context, {"topic": "business need"})
 
     async def test_get_session_outcome_returns_cached_outcome_without_calling_llm(self):
         await self.store.create_session("session-456")
@@ -60,8 +67,10 @@ class SessionOutcomeServiceTests(unittest.IsolatedAsyncioTestCase):
             attendance_intent=False,
             reschedule_intent=True,
             cancel_intent=False,
-            document_readiness_confirmation="Cached result",
-            questions_for_jordan=["Need a different time"],
+            summary="Cached result",
+            key_points=["Need a different time"],
+            next_steps=[],
+            context={},
         )
         await self.store.set_outcome("session-456", cached_outcome)
 
@@ -70,17 +79,36 @@ class SessionOutcomeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(outcome.attendance_intent)
         self.assertTrue(outcome.reschedule_intent)
         self.assertFalse(outcome.cancel_intent)
-        self.assertEqual(outcome.document_readiness_confirmation, "Cached result")
-        self.assertEqual(outcome.questions_for_jordan, ["Need a different time"])
+        self.assertEqual(outcome.summary, "Cached result")
+        self.assertEqual(outcome.key_points, ["Need a different time"])
+        self.assertEqual(self.fake_client.call_count, 0)
+
+    async def test_get_session_outcome_uses_db_persisted_outcome_without_calling_llm(self):
+        await self.store.create_session("session-789")
+        stored_outcome = {
+            "attendance_intent": True,
+            "reschedule_intent": False,
+            "cancel_intent": False,
+            "summary": "Stored from DB",
+            "key_points": ["Already saved"],
+            "next_steps": ["Follow up"],
+            "context": {"source": "db"},
+        }
+
+        with patch("app.utils.db.get_session", new=AsyncMock(return_value={"outcome_data": stored_outcome})):
+            outcome = await self.service.get_session_outcome("session-789")
+
+        self.assertEqual(outcome.summary, "Stored from DB")
+        self.assertEqual(outcome.key_points, ["Already saved"])
         self.assertEqual(self.fake_client.call_count, 0)
 
     async def test_get_session_outcome_persists_outcome_to_db(self):
-        await self.store.create_session("session-789")
+        await self.store.create_session("session-999")
 
         with patch.object(self.service, "_save_session_outcome_db", new_callable=AsyncMock) as save_outcome:
-            outcome = await self.service.get_session_outcome("session-789")
+            outcome = await self.service.get_session_outcome("session-999")
 
-        save_outcome.assert_awaited_once_with("session-789", outcome)
+        save_outcome.assert_awaited_once_with("session-999", outcome)
 
 
 if __name__ == "__main__":
