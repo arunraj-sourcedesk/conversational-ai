@@ -110,6 +110,22 @@ class SessionOutcomeServiceTests(unittest.IsolatedAsyncioTestCase):
 
         save_outcome.assert_awaited_once_with("session-999", outcome)
 
+    async def test_get_session_outcome_logs_generated_outcome(self):
+        await self.store.create_session("session-1000")
+        await self.store.append("session-1000", ConversationMessage(role="user", content="Yes, I can talk now."))
+        await self.store.append("session-1000", ConversationMessage(role="assistant", content="Great, let’s get started."))
+
+        with patch.object(self.service, "_save_session_outcome_db", new_callable=AsyncMock) as save_outcome, \
+                patch("app.services.chat_service.logger.info") as logger_info:
+            outcome = await self.service.get_session_outcome("session-1000")
+
+        save_outcome.assert_awaited_once_with("session-1000", outcome)
+        logger_info.assert_any_call(
+            "session outcome generated session=%s outcome=%s",
+            "session-1000",
+            outcome.model_dump(mode="json"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

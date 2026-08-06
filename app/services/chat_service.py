@@ -337,6 +337,11 @@ class ChatService:
             payload = json.loads(content)
             normalized_payload = self._normalize_session_outcome_payload(payload)
             outcome = SessionOutcomeResponse.model_validate(normalized_payload)
+            logger.info(
+                "session outcome generated session=%s outcome=%s",
+                session_id,
+                outcome.model_dump(mode="json"),
+            )
             await self._sessions.set_outcome(session_id, outcome)
             await self._save_session_outcome_db(session_id, outcome)
             return outcome
