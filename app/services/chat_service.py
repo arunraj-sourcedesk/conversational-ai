@@ -130,14 +130,18 @@ class ChatService:
             return None
 
         prompt = (
-            "You are generating concise post-meeting notes for a sales conversation. "
-            "Summarize the discussion, capture the main takeaways, and include suggested next steps. "
-            "Return plain text with short bullets or paragraphs.\n\n"
-            "CRITICAL INSTRUCTIONS:\n"
-            "- Only include details, facts, names, or dates that are explicitly mentioned in the conversation history.\n"
-            "- NEVER include template placeholders, bracketed placeholders, or fill-in-the-blanks (such as '[Insert Date]', '[Date]', '[Insert Name]', '[Insert Location]', etc.).\n"
-            "- If a detail (such as Date, Time, Participants, Location) is missing or not explicitly stated in the conversation history, omit that field/section entirely. Do not guess or output placeholder text.\n"
-            "- Do NOT format the notes with empty template fields or fill-in-the-blank placeholders."
+            "You are generating concise post-meeting notes for a sales conversation in Google Workspace / Gemini Notes style.\n\n"
+            "Format the output using clean Markdown with bold section headers as follows:\n"
+            "**Post-Meeting Notes: Sales Conversation Summary**\n\n"
+            "Include the following sections:\n"
+            "- **Participants:** (Include ONLY if participant names/roles are explicitly known from the conversation history)\n"
+            "- **Discussion Summary:** (Bullet points summarizing the core conversation)\n"
+            "- **Main Takeaways:** (Key takeaways, customer needs, and details discussed)\n"
+            "- **Suggested Next Steps:** (Clear follow-up action items)\n\n"
+            "CRITICAL INSTRUCTIONS FOR METADATA & PLACEHOLDERS:\n"
+            "1. NEVER output template placeholders or bracketed text like '[Insert Date]', '[Date]', '[Insert Name]', '[Location]', etc.\n"
+            "2. If a metadata field (such as Date, Time, Location) is missing from the conversation history, OMIT that header/line entirely. Do NOT invent a placeholder line or default value for missing metadata.\n"
+            "3. Strictly base all content on details explicitly mentioned in the conversation history."
         )
         messages = [
             {"role": "system", "content": prompt},

@@ -67,7 +67,8 @@ class SessionNotesTests(unittest.IsolatedAsyncioTestCase):
             await service.get_session_notes("session-999", history=history)
 
         system_msg = next(m["content"] for m in last_messages if m["role"] == "system")
-        self.assertIn("NEVER include template placeholders", system_msg)
+        self.assertIn("Google Workspace / Gemini Notes style", system_msg)
+        self.assertIn("NEVER output template placeholders", system_msg)
         self.assertIn("[Insert Date]", system_msg)
 
 
