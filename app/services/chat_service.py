@@ -132,7 +132,12 @@ class ChatService:
         prompt = (
             "You are generating concise post-meeting notes for a sales conversation. "
             "Summarize the discussion, capture the main takeaways, and include suggested next steps. "
-            "Return plain text with short bullets or paragraphs."
+            "Return plain text with short bullets or paragraphs.\n\n"
+            "CRITICAL INSTRUCTIONS:\n"
+            "- Only include details, facts, names, or dates that are explicitly mentioned in the conversation history.\n"
+            "- NEVER include template placeholders, bracketed placeholders, or fill-in-the-blanks (such as '[Insert Date]', '[Date]', '[Insert Name]', '[Insert Location]', etc.).\n"
+            "- If a detail (such as Date, Time, Participants, Location) is missing or not explicitly stated in the conversation history, omit that field/section entirely. Do not guess or output placeholder text.\n"
+            "- Do NOT format the notes with empty template fields or fill-in-the-blank placeholders."
         )
         messages = [
             {"role": "system", "content": prompt},
@@ -310,6 +315,7 @@ class ChatService:
             "You are summarizing a conversation session for any type of client. Use the entire conversation history to produce a generic outcome summary.\n"
             "Keep the response generic and client-agnostic, while preserving these three fields exactly: attendance_intent, reschedule_intent, cancel_intent.\n"
             "Also return a concise summary, a list of key points, a list of suggested next steps, and a small context object with any helpful details from the conversation.\n"
+            "CRITICAL INSTRUCTION: Do NOT include any template placeholders or bracketed text (such as '[Insert Date]', '[Date]', '[Name]', etc.) anywhere in the output. Strictly base all content on details explicitly present in the conversation history.\n"
             "Return ONLY a JSON object with the schema: {"
             '"attendance_intent": false, '
             '"reschedule_intent": false, '

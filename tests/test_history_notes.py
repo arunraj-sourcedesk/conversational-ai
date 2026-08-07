@@ -49,6 +49,27 @@ class SessionNotesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.call_count, 1)
         save_session.assert_not_awaited()
 
+    async def test_notes_prompt_forbids_placeholders(self):
+        last_messages = []
+
+        class InspectingClient:
+            async def chat_complete(self, messages, temperature=0.7, max_tokens=1024, response_format=None):
+                nonlocal last_messages
+                last_messages = messages
+                return "Valid summary", 50
+
+        service = ChatService(openai_client=InspectingClient(), session_store=type("DummyStore", (), {})(), settings=DummySettings())
+        history = [ConversationMessage(role="user", content="Hello")]
+
+        with patch("app.utils.db.get_session", new=AsyncMock(return_value={"notes": None})), patch(
+            "app.utils.db.save_session", new=AsyncMock()
+        ):
+            await service.get_session_notes("session-999", history=history)
+
+        system_msg = next(m["content"] for m in last_messages if m["role"] == "system")
+        self.assertIn("NEVER include template placeholders", system_msg)
+        self.assertIn("[Insert Date]", system_msg)
+
 
 if __name__ == "__main__":
     unittest.main()
